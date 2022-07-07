@@ -1,0 +1,50 @@
+#!/bin/sh
+set -e
+
+### Configuration Section
+
+# The location where the landlock selftests repo is
+LANDLOCK_SELFTESTS_RUNNER_DIR="$HOME/git/landlock-selftests/runner"
+# The location where you are doing kernel development
+KERNEL_DIR="${HOME}/linux"
+
+### End of configuration section.
+
+LOGFILE=$(mktemp -t landlock-testrun.log.XXXXXX)
+CPIOFILE=$(mktemp -t landlocktests.cpio.XXXXXX)
+
+cd "${LANDLOCK_SELFTESTS_RUNNER_DIR}"
+make runner
+
+cd "${KERNEL_DIR}"
+make LDFLAGS=-static TARGETS=landlock -j8 -C tools/testing/selftests
+
+# go install github.com/florianl/bluebox
+# This is a tool for building cpio archives,
+# which also does some basic environment setup.
+bluebox \
+    -e "${LANDLOCK_SELFTESTS_RUNNER_DIR}/runner:fs_test base_test ptrace_test" \
+    -r tools/testing/selftests/landlock/fs_test \
+    -r tools/testing/selftests/landlock/base_test \
+    -r tools/testing/selftests/landlock/ptrace_test \
+    -r tools/testing/selftests/landlock/true \
+    -o "${CPIOFILE}"
+
+qemu-system-x86_64 \
+    -nographic \
+    -m 4G \
+    -append "console=ttyS0 lsm=landlock" \
+    -kernel "${KERNEL_DIR}/arch/x86/boot/bzImage" \
+    -initrd "${CPIOFILE}"  | tee "${LOGFILE}.raw"
+
+rm "${CPIOFILE}"
+
+cat "${LOGFILE}.raw" \
+    | grep ' \] stdout' \
+    | sed -e 's,^\[ *\] stdout: ,,g' \
+          > "${LOGFILE}"
+
+echo
+echo "# LOGS:"
+echo "# ${LOGFILE}.raw"
+echo "# ${LOGFILE}"
